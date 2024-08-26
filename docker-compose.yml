@@ -4,7 +4,7 @@ services:
       context: .
       args:
         token: $token
-    image: SDAI
+    image: aici
     ports:
       - "3750:3750"
     deploy:
