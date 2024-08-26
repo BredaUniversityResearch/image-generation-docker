@@ -4,6 +4,7 @@ import datetime
 import inspect
 import os
 import re
+import uvicorn
 import warnings
 
 import numpy as np
@@ -19,6 +20,84 @@ from diffusers import (
     OnnxStableDiffusionImg2ImgPipeline,
     schedulers,
 )
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+
+
+app = FastAPI()
+
+device_ids = [0, 1, 2, 3]
+
+# Round-robin index for device selection
+current_device_idx = 0
+
+
+# instantiate pydantic json payload
+class ImageGenerationConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    attention_slicing: bool = Field(
+        False, description="Use less memory at the expense of inference speed"
+    )
+    device: str = Field(
+        "cuda", description="The cpu or cuda device to use to render images"
+    )
+    half: bool = Field(
+        False, description="Use float16 (half-sized) tensors instead of float32"
+    )
+    height: int = Field(512, description="Image height in pixels")
+    image: Optional[str] = Field(
+        None, description="The input image to use for image-to-image diffusion"
+    )
+    image_scale: Optional[float] = Field(
+        None, description="How closely the image should follow the original image"
+    )
+    iters: int = Field(1, description="Number of times to run pipeline")
+    mask: Optional[str] = Field(
+        None, description="The input mask to use for diffusion inpainting"
+    )
+    model: str = Field(
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        description="The model used to render images",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, description="The prompt to not render into an image"
+    )
+    onnx: bool = Field(False, description="Use the onnx runtime for inference")
+    prompt: Optional[str] = Field(
+        None, description="The prompt to render into an image"
+    )
+    samples: int = Field(1, description="Number of images to create per run")
+    scale: float = Field(
+        30, description="How closely the image should follow the prompt"
+    )
+    scheduler: Optional[str] = Field(
+        None, description="Override the scheduler used to denoise the image"
+    )
+    seed: int = Field(42, description="RNG seed for repeatability")
+    skip: bool = Field(False, description="Skip the safety checker")
+    steps: int = Field(60, description="Number of sampling steps")
+    strength: float = Field(
+        0.75, description="Diffusion strength to apply to the input image"
+    )
+    token: Optional[str] = Field(None, description="Huggingface user access token")
+    vae_slicing: bool = Field(
+        False, description="Use less memory when creating large batches of images"
+    )
+    vae_tiling: bool = Field(
+        False, description="Use less memory when creating ultra-high resolution images"
+    )
+    width: int = Field(512, description="Image width in pixels")
+    xformers_memory_efficient_attention: bool = Field(
+        False, description="Use less memory but require the xformers library"
+    )
+    dtype: Optional[torch.dtype] = None
+    diffuser: Optional[torch.nn.Module] = None
+    revision: Optional[str] = None
+    generator: Optional[torch.Generator] = None
+    pipeline: Optional[torch.nn.Module] = None
 
 
 def iso_date_time():
@@ -105,12 +184,17 @@ def stable_diffusion_pipeline(p):
     with warnings.catch_warnings():
         for c in [UserWarning, FutureWarning]:
             warnings.filterwarnings("ignore", category=c)
+        global current_device_idx
+        # Select device using round-robin index
+        device_id = device_ids[current_device_idx]
+        current_device_idx = (current_device_idx + 1) % len(device_ids)
+
         pipeline = p.diffuser.from_pretrained(
             p.model,
             torch_dtype=p.dtype,
             revision=p.revision,
             use_auth_token=p.token,
-        ).to(p.device)
+        ).to(f"{p.device}:{device_id}")
 
     if p.scheduler is not None:
         scheduler = getattr(schedulers, p.scheduler)
@@ -154,155 +238,25 @@ def stable_diffusion_inference(p):
             img.save(os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
+    # if only 1 image is generated return the png image
+    if i == 0:
+        return FileResponse(os.path.join("output", out), media_type="image/png")
+    else:
+        return None
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Create images from a text prompt.")
-    parser.add_argument(
-        "--attention-slicing",
-        action="store_true",
-        help="Use less memory at the expense of inference speed",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        nargs="?",
-        default="cuda",
-        help="The cpu or cuda device to use to render images",
-    )
-    parser.add_argument(
-        "--half",
-        action="store_true",
-        help="Use float16 (half-sized) tensors instead of float32",
-    )
-    parser.add_argument(
-        "--height", type=int, nargs="?", default=512, help="Image height in pixels"
-    )
-    parser.add_argument(
-        "--image",
-        type=str,
-        nargs="?",
-        help="The input image to use for image-to-image diffusion",
-    )
-    parser.add_argument(
-        "--image-scale",
-        type=float,
-        nargs="?",
-        help="How closely the image should follow the original image",
-    )
-    parser.add_argument(
-        "--iters",
-        type=int,
-        nargs="?",
-        default=1,
-        help="Number of times to run pipeline",
-    )
-    parser.add_argument(
-        "--mask",
-        type=str,
-        nargs="?",
-        help="The input mask to use for diffusion inpainting",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        nargs="?",
-        default="CompVis/stable-diffusion-v1-4",
-        help="The model used to render images",
-    )
-    parser.add_argument(
-        "--negative-prompt",
-        type=str,
-        nargs="?",
-        help="The prompt to not render into an image",
-    )
-    parser.add_argument(
-        "--onnx",
-        action="store_true",
-        help="Use the onnx runtime for inference",
-    )
-    parser.add_argument(
-        "--prompt", type=str, nargs="?", help="The prompt to render into an image"
-    )
-    parser.add_argument(
-        "--samples",
-        type=int,
-        nargs="?",
-        default=1,
-        help="Number of images to create per run",
-    )
-    parser.add_argument(
-        "--scale",
-        type=float,
-        nargs="?",
-        default=7.5,
-        help="How closely the image should follow the prompt",
-    )
-    parser.add_argument(
-        "--scheduler",
-        type=str,
-        nargs="?",
-        help="Override the scheduler used to denoise the image",
-    )
-    parser.add_argument(
-        "--seed", type=int, nargs="?", default=0, help="RNG seed for repeatability"
-    )
-    parser.add_argument(
-        "--skip",
-        action="store_true",
-        help="Skip the safety checker",
-    )
-    parser.add_argument(
-        "--steps", type=int, nargs="?", default=50, help="Number of sampling steps"
-    )
-    parser.add_argument(
-        "--strength",
-        type=float,
-        default=0.75,
-        help="Diffusion strength to apply to the input image",
-    )
-    parser.add_argument(
-        "--token", type=str, nargs="?", help="Huggingface user access token"
-    )
-    parser.add_argument(
-        "--vae-slicing",
-        action="store_true",
-        help="Use less memory when creating large batches of images",
-    )
-    parser.add_argument(
-        "--vae-tiling",
-        action="store_true",
-        help="Use less memory when creating ultra-high resolution images",
-    )
-    parser.add_argument(
-        "--width", type=int, nargs="?", default=512, help="Image width in pixels"
-    )
-    parser.add_argument(
-        "--xformers-memory-efficient-attention",
-        action="store_true",
-        help="Use less memory but require the xformers library",
-    )
-    parser.add_argument(
-        "prompt0",
-        metavar="PROMPT",
-        type=str,
-        nargs="?",
-        help="The prompt to render into an image",
-    )
-
-    args = parser.parse_args()
-
-    if args.prompt0 is not None:
-        args.prompt = args.prompt0
-
-    return args
-
-
-def main():
-    args = parse_args()
-    pipeline = stable_diffusion_pipeline(args)
-    stable_diffusion_inference(pipeline)
+@app.post("/")
+def image_generation(p: ImageGenerationConfig):
+    pipeline = stable_diffusion_pipeline(p)
+    img = stable_diffusion_inference(pipeline)
+    return img
 
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(
+        "docker-entrypoint:app",
+        host="0.0.0.0",
+        workers=4,
+        port=3750,
+        log_level="info",
+    )
