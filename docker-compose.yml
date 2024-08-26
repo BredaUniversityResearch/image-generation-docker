@@ -2,6 +2,9 @@ services:
   image-generation-docker:
     build:
       context: .
+      args:
+        token: $token
+    image: SDAI
     ports:
       - "3750:3750"
     deploy:
