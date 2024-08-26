@@ -59,7 +59,7 @@ class ImageGenerationConfig(BaseModel):
         None, description="The input mask to use for diffusion inpainting"
     )
     model: str = Field(
-        "stabilityai/stable-diffusion-xl-base-1.0",
+        "black-forest-labs/FLUX.1-dev",
         description="The model used to render images",
     )
     negative_prompt: Optional[str] = Field(
