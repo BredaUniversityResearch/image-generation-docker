@@ -4,12 +4,9 @@ RUN rm -rf /usr/local/cuda/lib64/stubs
 
 COPY requirements.txt /
 
-RUN pip install -r requirements.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu118
+RUN pip install torch --index-url https://download.pytorch.org/whl/cu121
 
-RUN useradd -m huggingface
-
-USER huggingface
+RUN pip install -r requirements.txt
 
 WORKDIR /home/huggingface
 
@@ -22,4 +19,6 @@ RUN mkdir -p /home/huggingface/.cache/huggingface \
 COPY docker-entrypoint.py /usr/local/bin
 COPY token.txt /home/huggingface
 
-ENTRYPOINT [ "docker-entrypoint.py" ]
+EXPOSE 3750
+
+ENTRYPOINT [ "python", "/usr/local/bin/docker-entrypoint.py" ]

@@ -39,11 +39,11 @@ pull() {
 
 run() {
     set_gpu_arg "$@"
-    docker run --rm ${GPU_ARG} \
+    docker run --name SDAI --gpus=all -p 3750:3750 -d \
         -v huggingface:/home/huggingface/.cache/huggingface \
         -v "$PWD"/input:/home/huggingface/input \
         -v "$PWD"/output:/home/huggingface/output \
-        "$CWD" "$@"
+        "$CWD"
 }
 
 tests() {
