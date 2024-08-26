@@ -4,6 +4,7 @@ services:
       context: .
       args:
         token: $token
+        gpus: all
     image: aici
     ports:
       - "3750:3750"
