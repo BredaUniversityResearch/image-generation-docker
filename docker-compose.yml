@@ -2,13 +2,20 @@ services:
   image-generation-docker:
     build:
       context: .
+      dockerfile: Dockerfile
+      args:
+        token: $token
+        gpus: all
+    image: aici
     ports:
       - "3750:3750"
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: ["gpu"]
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     volumes:
       - huggingface:/home/huggingface/.cache/huggingface
       - ./input:/home/huggingface/input
