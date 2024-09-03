@@ -261,6 +261,9 @@ def stable_diffusion_inference(p):
             out = f"{prefix}__steps_{p.steps}__scale_{p.scale:.2f}__seed_{p.seed}__n_{idx}.png"
             img.save(os.path.join("output", out))
             if p.character == True:
+                print("Character is true")
+                print(p.character)
+                print(os.path.join("output", out))
                 remove_background(image_location=os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
