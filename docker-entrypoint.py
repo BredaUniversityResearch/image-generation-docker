@@ -4,27 +4,28 @@ import datetime
 import inspect
 import os
 import re
-import uvicorn
 import warnings
+from typing import Optional
 
 import numpy as np
 import torch
-from PIL import Image
+import uvicorn
 from diffusers import (
-    AutoPipelineForText2Image,
     AutoPipelineForImage2Image,
     AutoPipelineForInpainting,
+    AutoPipelineForText2Image,
+    ControlNetModel,
     DiffusionPipeline,
-    OnnxStableDiffusionPipeline,
-    OnnxStableDiffusionInpaintPipeline,
     OnnxStableDiffusionImg2ImgPipeline,
+    OnnxStableDiffusionInpaintPipeline,
+    OnnxStableDiffusionPipeline,
     schedulers,
 )
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
-
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field
+from rembg import remove
 
 
 app = FastAPI()
@@ -40,6 +41,10 @@ class ImageGenerationConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     attention_slicing: bool = Field(
         False, description="Use less memory at the expense of inference speed"
+    )
+    character: bool = Field(
+        False,
+        description="Use for generating character with no background and specific poses",
     )
     device: str = Field(
         "cuda", description="The cpu or cuda device to use to render images"
@@ -127,6 +132,25 @@ def remove_unused_args(p):
         "generator": p.generator,
     }
     return {p: args[p] for p in params if p in args}
+
+
+def remove_background(image_location: str):
+    """Remove background from the generated image of the character.
+
+    Args:
+        image_location (str): Location of the generated image
+    """
+
+    # load image
+    input = Image.open(image_location)
+
+    # remove background
+    output = remove(input)
+
+    # save image
+    output.save(image_location)
+
+    return
 
 
 def stable_diffusion_pipeline(p):
@@ -236,6 +260,8 @@ def stable_diffusion_inference(p):
             idx = j * p.samples + i + 1
             out = f"{prefix}__steps_{p.steps}__scale_{p.scale:.2f}__seed_{p.seed}__n_{idx}.png"
             img.save(os.path.join("output", out))
+            if p.character == True:
+                remove_background(image_location=os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
     # if only 1 image is generated return the png image
