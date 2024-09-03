@@ -16,9 +16,8 @@ RUN mkdir -p /home/huggingface/.cache/huggingface \
   && mkdir -p /home/huggingface/input \
   && mkdir -p /home/huggingface/output
 
-COPY docker-entrypoint.py /usr/local/bin
-#COPY token.txt /home/huggingface
+COPY docker-entrypoint.py /home/huggingface/
 
 EXPOSE 3750
 
-ENTRYPOINT [ "python", "/usr/local/bin/docker-entrypoint.py" ]
+ENTRYPOINT [ "python", "/home/huggingface/docker-entrypoint.py" ]
