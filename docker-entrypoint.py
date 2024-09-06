@@ -19,6 +19,7 @@ from diffusers import (
     OnnxStableDiffusionImg2ImgPipeline,
     OnnxStableDiffusionInpaintPipeline,
     OnnxStableDiffusionPipeline,
+    StableDiffusionXLControlNetPipeline,
     schedulers,
 )
 from fastapi import FastAPI
@@ -26,7 +27,6 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from rembg import remove
-
 
 app = FastAPI()
 
@@ -99,6 +99,7 @@ class ImageGenerationConfig(BaseModel):
         False, description="Use less memory but require the xformers library"
     )
     dtype: Optional[torch.dtype] = None
+    controlnet: Optional[torch.nn.Module] = None
     diffuser: Optional[torch.nn.Module] = None
     revision: Optional[str] = None
     generator: Optional[torch.Generator] = None
@@ -120,6 +121,7 @@ def remove_unused_args(p):
     args = {
         "prompt": p.prompt,
         "negative_prompt": p.negative_prompt,
+        "controlnet": p.controlnet,
         "image": p.image,
         "mask_image": p.mask,
         "height": p.height,
@@ -213,8 +215,17 @@ def stable_diffusion_pipeline(p):
         device_id = device_ids[current_device_idx]
         current_device_idx = (current_device_idx + 1) % len(device_ids)
 
+        if p.character == True:
+            if p.image is not None:
+                p.controlnet = ControlNetModel.from_pretrained(
+                    "thibaud/controlnet-openpose-sdxl-1.0",
+                )
+
+                p.diffuser = StableDiffusionXLControlNetPipeline
+
         pipeline = p.diffuser.from_pretrained(
             p.model,
+            controlnet=p.controlnet,
             torch_dtype=p.dtype,
             revision=p.revision,
             use_auth_token=p.token,
@@ -239,7 +250,7 @@ def stable_diffusion_pipeline(p):
     if p.vae_tiling:
         pipeline.enable_vae_tiling()
 
-    p.pipeline = pipeline
+    p.pipeline = pipeline.enable_model_cpu_offload()
 
     print("loaded models after:", iso_date_time(), flush=True)
 
@@ -261,9 +272,6 @@ def stable_diffusion_inference(p):
             out = f"{prefix}__steps_{p.steps}__scale_{p.scale:.2f}__seed_{p.seed}__n_{idx}.png"
             img.save(os.path.join("output", out))
             if p.character == True:
-                print("Character is true")
-                print(p.character)
-                print(os.path.join("output", out))
                 remove_background(image_location=os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
