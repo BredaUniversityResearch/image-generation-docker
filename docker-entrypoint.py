@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import datetime
+import gc
 import inspect
 import os
 import re
@@ -28,6 +29,10 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from rembg import remove
 
+# empty gpu cache
+torch.cuda.empty_cache()
+gc.collect
+
 app = FastAPI()
 
 device_ids = [0, 1, 2, 3]
@@ -42,9 +47,12 @@ class ImageGenerationConfig(BaseModel):
     attention_slicing: bool = Field(
         False, description="Use less memory at the expense of inference speed"
     )
-    character: bool = Field(
+    character: Optional[bool] = Field(
         False,
         description="Use for generating character with no background and specific poses",
+    )
+    controlnet_conditioning_scale: float = Field(
+        1.0, description="Generalization for controlnet"
     )
     device: str = Field(
         "cuda", description="The cpu or cuda device to use to render images"
@@ -58,6 +66,9 @@ class ImageGenerationConfig(BaseModel):
     )
     image_scale: Optional[float] = Field(
         None, description="How closely the image should follow the original image"
+    )
+    ip_adapter_image: Optional[str] = Field(
+        None, description="The image used as base for ip adapter"
     )
     iters: int = Field(1, description="Number of times to run pipeline")
     mask: Optional[str] = Field(
@@ -121,8 +132,9 @@ def remove_unused_args(p):
     args = {
         "prompt": p.prompt,
         "negative_prompt": p.negative_prompt,
-        "controlnet": p.controlnet,
         "image": p.image,
+        "ip_adapter_image": p.ip_adapter_image,
+        "controlnet_conditioning_scale": p.controlnet_conditioning_scale,
         "mask_image": p.mask,
         "height": p.height,
         "width": p.width,
@@ -184,6 +196,7 @@ def stable_diffusion_pipeline(p):
         elif is_auto_pipeline:
             p.diffuser = AutoPipelineForImage2Image
         p.image = load_image(p.image)
+        p.ip_adapter_image = load_image(p.ip_adapter_image)
 
     if p.mask is not None:
         if p.revision == "onnx":
@@ -218,7 +231,7 @@ def stable_diffusion_pipeline(p):
         if p.character == True:
             if p.image is not None:
                 p.controlnet = ControlNetModel.from_pretrained(
-                    "thibaud/controlnet-openpose-sdxl-1.0",
+                    "xinsir/controlnet-openpose-sdxl-1.0",
                 )
 
                 p.diffuser = StableDiffusionXLControlNetPipeline
@@ -230,6 +243,13 @@ def stable_diffusion_pipeline(p):
             revision=p.revision,
             use_auth_token=p.token,
         ).to(f"{p.device}:{device_id}")
+
+    if p.ip_adapter_image is not None:
+        pipeline.load_ip_adapter(
+            "h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin"
+        )
+        pipeline.ip_adapter_image = p.ip_adapter_image
+        pipeline.set_ip_adapter_scale(1.0)
 
     if p.scheduler is not None:
         scheduler = getattr(schedulers, p.scheduler)
@@ -250,7 +270,7 @@ def stable_diffusion_pipeline(p):
     if p.vae_tiling:
         pipeline.enable_vae_tiling()
 
-    p.pipeline = pipeline.enable_model_cpu_offload()
+    p.pipeline = pipeline
 
     print("loaded models after:", iso_date_time(), flush=True)
 
