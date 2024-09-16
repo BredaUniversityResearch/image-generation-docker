@@ -1,31 +1,37 @@
 #!/usr/bin/env python
 import argparse
 import datetime
+import gc
 import inspect
 import os
 import re
-import uvicorn
 import warnings
+from typing import Optional
 
 import numpy as np
 import torch
-from PIL import Image
+import uvicorn
 from diffusers import (
-    AutoPipelineForText2Image,
     AutoPipelineForImage2Image,
     AutoPipelineForInpainting,
+    AutoPipelineForText2Image,
+    ControlNetModel,
     DiffusionPipeline,
-    OnnxStableDiffusionPipeline,
-    OnnxStableDiffusionInpaintPipeline,
     OnnxStableDiffusionImg2ImgPipeline,
+    OnnxStableDiffusionInpaintPipeline,
+    OnnxStableDiffusionPipeline,
+    StableDiffusionXLControlNetPipeline,
     schedulers,
 )
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
-
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field
+from rembg import remove
 
+# empty gpu cache
+torch.cuda.empty_cache()
+gc.collect
 
 app = FastAPI()
 
@@ -41,6 +47,13 @@ class ImageGenerationConfig(BaseModel):
     attention_slicing: bool = Field(
         False, description="Use less memory at the expense of inference speed"
     )
+    character: Optional[bool] = Field(
+        False,
+        description="Use for generating character with no background and specific poses",
+    )
+    controlnet_conditioning_scale: float = Field(
+        1.0, description="Generalization for controlnet"
+    )
     device: str = Field(
         "cuda", description="The cpu or cuda device to use to render images"
     )
@@ -53,6 +66,9 @@ class ImageGenerationConfig(BaseModel):
     )
     image_scale: Optional[float] = Field(
         None, description="How closely the image should follow the original image"
+    )
+    ip_adapter_image: Optional[str] = Field(
+        None, description="The image used as base for ip adapter"
     )
     iters: int = Field(1, description="Number of times to run pipeline")
     mask: Optional[str] = Field(
@@ -94,6 +110,7 @@ class ImageGenerationConfig(BaseModel):
         False, description="Use less memory but require the xformers library"
     )
     dtype: Optional[torch.dtype] = None
+    controlnet: Optional[torch.nn.Module] = None
     diffuser: Optional[torch.nn.Module] = None
     revision: Optional[str] = None
     generator: Optional[torch.Generator] = None
@@ -116,6 +133,8 @@ def remove_unused_args(p):
         "prompt": p.prompt,
         "negative_prompt": p.negative_prompt,
         "image": p.image,
+        "ip_adapter_image": p.ip_adapter_image,
+        "controlnet_conditioning_scale": p.controlnet_conditioning_scale,
         "mask_image": p.mask,
         "height": p.height,
         "width": p.width,
@@ -127,6 +146,25 @@ def remove_unused_args(p):
         "generator": p.generator,
     }
     return {p: args[p] for p in params if p in args}
+
+
+def remove_background(image_location: str):
+    """Remove background from the generated image of the character.
+
+    Args:
+        image_location (str): Location of the generated image
+    """
+
+    # load image
+    input = Image.open(image_location)
+
+    # remove background
+    output = remove(input)
+
+    # save image
+    output.save(image_location)
+
+    return
 
 
 def stable_diffusion_pipeline(p):
@@ -158,6 +196,7 @@ def stable_diffusion_pipeline(p):
         elif is_auto_pipeline:
             p.diffuser = AutoPipelineForImage2Image
         p.image = load_image(p.image)
+        p.ip_adapter_image = load_image(p.ip_adapter_image)
 
     if p.mask is not None:
         if p.revision == "onnx":
@@ -189,12 +228,28 @@ def stable_diffusion_pipeline(p):
         device_id = device_ids[current_device_idx]
         current_device_idx = (current_device_idx + 1) % len(device_ids)
 
+        if p.character == True:
+            if p.image is not None:
+                p.controlnet = ControlNetModel.from_pretrained(
+                    "xinsir/controlnet-openpose-sdxl-1.0",
+                )
+
+                p.diffuser = StableDiffusionXLControlNetPipeline
+
         pipeline = p.diffuser.from_pretrained(
             p.model,
+            controlnet=p.controlnet,
             torch_dtype=p.dtype,
             revision=p.revision,
             use_auth_token=p.token,
         ).to(f"{p.device}:{device_id}")
+
+    if p.ip_adapter_image is not None:
+        pipeline.load_ip_adapter(
+            "h94/IP-Adapter", subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin"
+        )
+        pipeline.ip_adapter_image = p.ip_adapter_image
+        pipeline.set_ip_adapter_scale(1.0)
 
     if p.scheduler is not None:
         scheduler = getattr(schedulers, p.scheduler)
@@ -236,6 +291,8 @@ def stable_diffusion_inference(p):
             idx = j * p.samples + i + 1
             out = f"{prefix}__steps_{p.steps}__scale_{p.scale:.2f}__seed_{p.seed}__n_{idx}.png"
             img.save(os.path.join("output", out))
+            if p.character == True:
+                remove_background(image_location=os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
     # if only 1 image is generated return the png image
