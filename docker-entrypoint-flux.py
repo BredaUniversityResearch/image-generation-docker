@@ -11,10 +11,7 @@ from typing import Optional
 import numpy as np
 import torch
 import uvicorn
-from diffusers import (
-    ControlNetModel,
-    FluxPipeline,
-)
+from diffusers import FluxPipeline, FluxControlNetModel, FluxControlNetPipeline
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from PIL import Image
@@ -35,6 +32,13 @@ class ImageGenerationConfig(BaseModel):
     attention_slicing: bool = Field(
         False, description="Use less memory at the expense of inference speed"
     )
+    character: Optional[bool] = Field(
+        False,
+        description="Use for generating character with no background and specific poses",
+    )
+    controlnet_conditioning_scale: float = Field(
+        0.6, description="Generalization for controlnet"
+    )
     device: str = Field(
         "cuda", description="The cpu or cuda device to use to render images"
     )
@@ -49,6 +53,9 @@ class ImageGenerationConfig(BaseModel):
         None, description="The image used as base for ip adapter"
     )
     iters: int = Field(1, description="Number of times to run pipeline")
+    max_sequence_length: int = Field(
+        256, description="Maximum sequence length. Cannot be over 256 for flux schnell."
+    )
     model: str = Field(
         "black-forest-labs/FLUX.1-schnell",
         description="The model used to render images",
@@ -63,6 +70,7 @@ class ImageGenerationConfig(BaseModel):
 
     seed: int = Field(42, description="RNG seed for repeatability")
     steps: int = Field(4, description="Number of sampling steps")
+    token: Optional[str] = Field(None, description="Huggingface user access token")
     vae_slicing: bool = Field(
         False, description="Use less memory when creating large batches of images"
     )
@@ -97,9 +105,14 @@ def remove_unused_args(p):
         "num_images_per_prompt": p.samples,
         "num_inference_steps": p.steps,
         "guidance_scale": p.scale,
+        "controlnet": p.controlnet,
+        "control_image": p.image,
+        "control_mode": 4,
         "image_guidance_scale": p.image_scale,
+        "controlnet_conditioning_scale": p.controlnet_conditioning_scale,
+        "ip_adapter_image": p.ip_adapter_image,
         "generator": p.generator,
-        "max_sequence_length": 256,
+        "max_sequence_length": p.max_sequence_length,
     }
     return {p: args[p] for p in params if p in args}
 
@@ -128,6 +141,9 @@ def flux_pipeline(p):
 
     p.diffuser = FluxPipeline
 
+    if p.image is not None:
+        p.image = load_image(p.image)
+
     if p.seed == 0:
         p.seed = torch.random.seed()
 
@@ -143,8 +159,18 @@ def flux_pipeline(p):
         device_id = device_ids[current_device_idx]
         current_device_idx = (current_device_idx + 1) % len(device_ids)
 
+        if p.character == True:
+            if p.image is not None:
+                p.controlnet = FluxControlNetModel.from_pretrained(
+                    "InstantX/FLUX.1-dev-Controlnet-Union",
+                    torch_dtype=p.dtype,
+                )
+
+                p.diffuser = FluxControlNetPipeline
+
         pipeline = p.diffuser.from_pretrained(
             p.model,
+            controlnet=p.controlnet,
             torch_dtype=p.dtype,
         )
 
@@ -172,8 +198,6 @@ def flux_inference(p):
             idx = j * p.samples + i + 1
             out = f"{prefix}__steps_{p.steps}__scale_{p.scale:.2f}__seed_{p.seed}__n_{idx}.png"
             img.save(os.path.join("output", out))
-            # if p.character == True:
-            #     remove_background(image_location=os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
     # if only 1 image is generated return the png image
@@ -195,7 +219,7 @@ def image_generation(p: ImageGenerationConfig):
 
 if __name__ == "__main__":
     uvicorn.run(
-        "docker-entrypoint_flux:app",
+        "docker-entrypoint-flux:app",
         host="0.0.0.0",
         workers=4,
         port=3750,

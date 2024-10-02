@@ -291,8 +291,6 @@ def stable_diffusion_inference(p):
             idx = j * p.samples + i + 1
             out = f"{prefix}__steps_{p.steps}__scale_{p.scale:.2f}__seed_{p.seed}__n_{idx}.png"
             img.save(os.path.join("output", out))
-            if p.character == True:
-                remove_background(image_location=os.path.join("output", out))
 
     print("completed pipeline:", iso_date_time(), flush=True)
     # if only 1 image is generated return the png image
